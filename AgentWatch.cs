@@ -54,6 +54,14 @@ namespace AgentWatch
         [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr h);
         [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+        public delegate bool EnumWindowsProc(IntPtr h, IntPtr l);
+        [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr l);
+        [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);
+        [DllImport("user32.dll")] public static extern int GetWindowTextLengthW(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder sb, int max);
+        [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+        [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+        public static string WinText(IntPtr h) { int n = GetWindowTextLengthW(h); if (n <= 0) return ""; var sb = new StringBuilder(Math.Min(n + 1, 512)); GetWindowTextW(h, sb, sb.Capacity); return sb.ToString(); }
         [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
         public const uint QUERY_LIMITED = 0x1000;
         public static readonly IntPtr INVALID = new IntPtr(-1);
@@ -102,7 +110,7 @@ namespace AgentWatch
         public long LastCpu, LastStamp; public double Cpu; public double RamMB;
         public PInfo Parent; public List<PInfo> Kids = new List<PInfo>();
         public PInfo MatchedParent; public PInfo Root;
-        public bool Active; public DateTime LastActive = DateTime.MinValue; public string ActiveReason = "";
+        public bool Active; public DateTime LastActive = DateTime.MinValue; public string ActiveReason = ""; public bool AgentApp; public string AppName, AppAgent, WinTitle; public DateTime LastBusy = DateTime.MinValue;
         public string Key { get { return Pid + ":" + Create; } }
         public DateTime StartLocal { get { return Create > 0 ? DateTime.FromFileTimeUtc(Create).ToLocalTime() : DateTime.MinValue; } }
     }
@@ -244,7 +252,7 @@ namespace AgentWatch
 
     class Expl
     {
-        public string Id, App, Friendly, Risk, What, Why, Todo, Category; public bool Agent;
+        public string Id, App, Friendly, Risk, What, Why, Todo, Category, Short; public bool Agent;
         public Regex Name, PathRx, Cmd, Parent;
         public Level BaseLevel { get { return Risk == "yellow" || Risk == "screen" ? Level.Yellow : Level.Green; } }
     }
@@ -299,7 +307,7 @@ namespace AgentWatch
                         e.Id = Str(d, "id") ?? ("rule" + i);
                         e.Name = Rx(Str(d, "name")); e.PathRx = Rx(Str(d, "path")); e.Cmd = Rx(Str(d, "cmd")); e.Parent = Rx(Str(d, "parent"));
                         e.App = Str(d, "app"); e.Friendly = Str(d, "friendly"); e.Risk = (Str(d, "risk") ?? "green").ToLowerInvariant();
-                        e.What = Str(d, "what"); e.Why = Str(d, "why"); e.Todo = Str(d, "todo"); e.Category = (Str(d, "category") ?? "").ToLowerInvariant();
+                        e.What = Str(d, "what"); e.Why = Str(d, "why"); e.Todo = Str(d, "todo"); e.Category = (Str(d, "category") ?? "").ToLowerInvariant(); e.Short = Str(d, "short");
                         object ag; e.Agent = d.TryGetValue("agent", out ag) && ag is bool && (bool)ag;
                     }
                     catch (Exception ex) { Logger.Error("explanations.json rule " + i + ": " + ex.Message); continue; }
@@ -376,18 +384,19 @@ namespace AgentWatch
 
     class Episode
     {
-        public DateTime Start, End; public bool Open; public string App, Agent, Proc, Trigger, Detail = ""; public int Pid;
+        public DateTime Start, End; public bool Open; public string App, Agent, Proc, Trigger, Detail = "", Kind = "screen", Target; public int Pid, Count = 1;
+        public string What { get { return Kind == "app" ? "Opened " + (Target ?? Proc) + (Count > 1 ? " (" + Count + " copies)" : "") + (Open ? " (still open)" : "") : "Controlling " + (Target ?? "the screen"); } }
         static string Clean(string x) { return (x ?? "").Replace("\t", " ").Replace("\r", " ").Replace("\n", " "); }
         public string ToLine()
         {
-            return string.Join("\t", new[] { Start.ToString("yyyy-MM-dd HH:mm:ss"), End.ToString("yyyy-MM-dd HH:mm:ss"), Clean(App), Clean(Agent), Clean(Proc), Pid.ToString(), Clean(Trigger), Clean(Detail) });
+            return string.Join("\t", new[] { Start.ToString("yyyy-MM-dd HH:mm:ss"), End.ToString("yyyy-MM-dd HH:mm:ss"), Clean(App), Clean(Agent), Clean(Proc), Pid.ToString(), Clean(Trigger), Clean(Detail), Clean(Kind), Clean(Target) });
         }
         public static Episode FromLine(string l)
         {
             var f = l.Split('\t'); if (f.Length < 8) return null;
             var e = new Episode();
             DateTime.TryParse(f[0], out e.Start); DateTime.TryParse(f[1], out e.End);
-            e.App = f[2]; e.Agent = f[3]; e.Proc = f[4]; int.TryParse(f[5], out e.Pid); e.Trigger = f[6]; e.Detail = f[7];
+            e.App = f[2]; e.Agent = f[3]; e.Proc = f[4]; int.TryParse(f[5], out e.Pid); e.Trigger = f[6]; e.Detail = f[7]; if (f.Length > 8) e.Kind = f[8]; if (f.Length > 9 && f[9].Length > 0) e.Target = f[9];
             return e;
         }
     }
@@ -456,7 +465,7 @@ namespace AgentWatch
         string cuaLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"OpenBot\logs\remote\cua-driver.log");
         int tickNo = 0;
         IntPtr sbuf = IntPtr.Zero; int sbufLen = 0;
-        long lastStamp = 0;
+        long lastStamp = 0; DateTime cuaChecked = DateTime.MinValue; bool cuaReal = false;
 
         public Explainer X = new Explainer();
         public List<PInfo> Roots = new List<PInfo>();
@@ -539,7 +548,7 @@ namespace AgentWatch
         public void Tick()
         {
             tickNo++;
-            NewControllers.Clear(); NewlyActive.Clear(); NewEpisodes.Clear(); newProcs.Clear();
+            NewControllers.Clear(); NewlyActive.Clear(); NewEpisodes.Clear(); NewAppEps.Clear(); newProcs.Clear();
             if (tickNo % 4 == 1 || X.Version == 0) X.CheckReload();
             long stamp = DateTime.UtcNow.Ticks;
             double dt = lastStamp > 0 ? (stamp - lastStamp) : 0; lastStamp = stamp;
@@ -587,7 +596,14 @@ namespace AgentWatch
             if (budget < 60) BuildRoots(alive);
 
             try { var fi = new FileInfo(cuaLog); if (fi.Exists) CuaLogWrite = fi.LastWriteTime; } catch { }
-            OpenBotScanning = (DateTime.Now - CuaLogWrite).TotalSeconds < 30;
+            bool recent = (DateTime.Now - CuaLogWrite).TotalSeconds < 30;
+            if (recent && CuaLogWrite != cuaChecked)
+            {
+                cuaChecked = CuaLogWrite; cuaReal = false;
+                var tl = LogPeek.Tail(cuaLog, 4096);
+                for (int i = tl.Count - 1; i >= 0 && i >= tl.Count - 4; i--) { var l = tl[i]; if (l.Trim().Length == 0) continue; cuaReal = !(l.Contains("daemon listening") || l.Contains("driver stopped")); break; }
+            }
+            OpenBotScanning = recent && cuaReal;
 
             Controllers = new List<PInfo>();
             foreach (var p in alive.Values)
@@ -617,8 +633,11 @@ namespace AgentWatch
                 if (!nowActive) p.ActiveReason = "";
                 p.Active = nowActive;
             }
+            ScanWindows();
+            UpdateAgentApps();
             UpdateEpisodes();
             foreach (var p in alive.Values) p.Lv = LevelOf(p);
+            foreach (var p in AgentApps) p.Lv = OpenEpisodes.ContainsKey(AppOf(p)) ? Level.Red : Level.Yellow;
 
             if (tickNo % 4 == 1) RemoteSessions = GetRemoteSessions();
 
@@ -646,6 +665,215 @@ namespace AgentWatch
             first = false;
         }
 
+        // ---------- windows + agent-launched apps ----------
+        public Dictionary<int, string> Windows = new Dictionary<int, string>();
+        public int FgPid; public string FgTitle = "";
+        public List<PInfo> AgentApps = new List<PInfo>();
+        public Dictionary<string, Episode> OpenAppEps = new Dictionary<string, Episode>();
+        public List<Episode> NewAppEps = new List<Episode>();
+        static Native.EnumWindowsProc enumCb; static Dictionary<int, string> enumTarget;
+        static readonly Dictionary<string, string> descCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        static readonly HashSet<string> NotApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "node.exe","conhost.exe","cmd.exe","powershell.exe","pwsh.exe","bash.exe","sh.exe","wsl.exe","wslhost.exe","py.exe","pyw.exe","uv.exe","npx.exe","bun.exe","deno.exe",
+            "git.exe","gh.exe","cua-driver.exe","crashpad_handler.exe","werfault.exe","msedgewebview2.exe","openconsole.exe","rg.exe","curl.exe","tasklist.exe","where.exe","timeout.exe",
+            "reg.exe","findstr.exe","net.exe","sc.exe","schtasks.exe","whoami.exe","taskkill.exe","dllhost.exe","rundll32.exe","node_repl.exe","java.exe","esbuild.exe" };
+        static readonly HashSet<string> KnownGui = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+            "blender","chrome","msedge","firefox","brave","opera","notepad","notepad++","mspaint","paint","winword","excel","powerpnt","outlook","onenote","code","explorer","calc",
+            "calculatorapp","photoshop","gimp","gimp-2.10","obs64","vlc","wordpad","acrobat","acrord32","sumatrapdf","discord","slack","ms-teams","figma","krita","inkscape","audacity",
+            "resolve","unity","unrealeditor","godot","freecad","sketchup","mstsc","snippingtool","screensketch","photos","wt","windowsterminal" };
+
+        void ScanWindows()
+        {
+            var d = new Dictionary<int, string>();
+            enumTarget = d; if (enumCb == null) enumCb = EnumCb;
+            try { Native.EnumWindows(enumCb, IntPtr.Zero); } catch { }
+            Windows = d;
+            try { IntPtr fg = Native.GetForegroundWindow(); uint pid; Native.GetWindowThreadProcessId(fg, out pid); FgPid = (int)pid; FgTitle = Native.WinText(fg); } catch { FgPid = 0; FgTitle = ""; }
+        }
+        static bool EnumCb(IntPtr h, IntPtr l)
+        {
+            if (!Native.IsWindowVisible(h) || Native.GetWindow(h, 4) != IntPtr.Zero || Native.GetWindowTextLengthW(h) == 0) return true;
+            uint pid; Native.GetWindowThreadProcessId(h, out pid);
+            if (!enumTarget.ContainsKey((int)pid)) enumTarget[(int)pid] = Native.WinText(h);
+            return true;
+        }
+
+        public static string AppNameOf(PInfo p)
+        {
+            if (p.E != null && !string.IsNullOrEmpty(p.E.Short)) return p.E.Short;
+            string desc = null;
+            if (!string.IsNullOrEmpty(p.Path))
+            {
+                if (!descCache.TryGetValue(p.Path, out desc))
+                {
+                    try { var vi = FileVersionInfo.GetVersionInfo(p.Path); desc = !string.IsNullOrEmpty(vi.FileDescription) ? vi.FileDescription : vi.ProductName; } catch { }
+                    if (desc != null && (desc.Length > 40 || desc.Trim().Length == 0)) desc = null;
+                    descCache[p.Path] = desc;
+                }
+            }
+            if (!string.IsNullOrEmpty(desc)) return desc.Trim();
+            string n = Path.GetFileNameWithoutExtension(p.Name ?? "app");
+            return n.Length > 0 ? char.ToUpper(n[0]) + n.Substring(1) : n;
+        }
+
+        static string RootCategory(PInfo r)
+        {
+            if (r == null) return "";
+            if (r.E != null && !string.IsNullOrEmpty(r.E.Category)) return r.E.Category;
+            return r.C != null && r.C.Role == Role.Agent ? "agent" : "";
+        }
+
+        bool IsGuiApp(PInfo p)
+        {
+            if (p.Root == null || p.Root == p || RootCategory(p.Root) != "agent") return false;
+            string n = p.Name ?? "";
+            if (NotApps.Contains(n) || n.StartsWith("python", StringComparison.OrdinalIgnoreCase)) return false;
+            if (p.C != null) return false;
+            if (p.E != null && (p.E.Category == "agent" || p.E.Category == "mcp" || p.E.Category == "screen-control")) return false;
+            int g = 0;
+            for (var a = p.Parent; a != null && g < 4; a = a.Parent, g++) if (string.Equals(a.Name, n, StringComparison.OrdinalIgnoreCase)) return false;
+            if (string.Equals(p.Root.Name, n, StringComparison.OrdinalIgnoreCase)) return false;
+            return Windows.ContainsKey(p.Pid) || KnownGui.Contains(Path.GetFileNameWithoutExtension(n));
+        }
+
+        static string ShortOf(Expl e, PInfo p)
+        {
+            if (e != null && !string.IsNullOrEmpty(e.Short)) return e.Short;
+            if (e != null && e.App != null) return e.App;
+            return p.Name;
+        }
+
+        PInfo OpenBotRuntime()
+        {
+            PInfo best = null;
+            foreach (var p in cache.Values)
+            {
+                if (p.E == null || p.E.Category != "agent" || !p.E.Id.StartsWith("openbot-") || p.E.Id == "openbot-app") continue;
+                if (best == null || p.Cpu > best.Cpu + 0.05 || (Math.Abs(p.Cpu - best.Cpu) <= 0.05 && p.Create > best.Create)) best = p;
+            }
+            return best;
+        }
+
+        // who asked for it, e.g. "OpenBot (Gemini)", "Codex", "Claude"
+        public string AgentShort(PInfo p)
+        {
+            int g = 0;
+            for (var a = p.Parent; a != null && g < 10; a = a.Parent, g++)
+            {
+                if (a.E != null && a.E.Category == "agent" && a.E.Id != "agent-shell")
+                {
+                    if (a.E.Id == "openbot-app") { var rt = OpenBotRuntime(); return rt != null ? ShortOf(rt.E, rt) : "OpenBot"; }
+                    return ShortOf(a.E, a);
+                }
+            }
+            return AppOf(p);
+        }
+
+        public static string Possessive(string agentShort)
+        {
+            var m = Regex.Match(agentShort ?? "", @"^(.+?) \((.+)\)$");
+            if (m.Success) return m.Groups[1].Value + "'s " + m.Groups[2].Value + " agent";
+            return agentShort;
+        }
+
+        static readonly Regex LangGuard = new Regex(@"(?is)if\s*\(\s*\$ExecutionContext[^{}]*\{[^{}]*\}\s*;?");
+        static readonly Regex TryPre = new Regex(@"(?is)try\s*\{[^{}]*\}\s*catch\s*\{[^{}]*\}\s*;?");
+        static readonly Regex WinPath = new Regex(@"""?(?:[A-Za-z]:|\\\\)\\?[^""\s]*\\([^\\""\s]+)""?");
+        static string SafeName(string v)
+        {
+            v = (v ?? "").Replace("\\\"", "").Trim('"', '\'', ' ', '\\');
+            int i = Math.Max(v.LastIndexOf('\\'), v.LastIndexOf('/'));
+            return i >= 0 ? v.Substring(i + 1) : v;
+        }
+        public static string ShellSummary(PInfo p) { try { return ShellSummary0(p); } catch { return null; } }
+        static string ShellSummary0(PInfo p)
+        {
+            string c = p.Cmd; if (string.IsNullOrEmpty(c)) return null;
+            if (c.IndexOf("CLAUDE_DESKTOP_TERMINAL_HOOKS", StringComparison.OrdinalIgnoreCase) >= 0) return "Claude's built-in terminal (an interactive PowerShell window)";
+            string n = (p.Name ?? "").ToLowerInvariant();
+            bool ps = n.StartsWith("powershell") || n.StartsWith("pwsh");
+            string kind = ps ? "PowerShell command" : n == "cmd.exe" ? "command" : "Linux command";
+            c = Regex.Replace(c, @"^\s*(""[^""]+""|\S+)\s*", "");
+            var enc = Regex.Match(c, @"(?i)-e(nc|ncodedcommand)?\s+([A-Za-z0-9+/=]{8,})");
+            if (ps && enc.Success) { try { c = Encoding.Unicode.GetString(Convert.FromBase64String(enc.Groups[2].Value)); } catch { return "Running an encoded PowerShell command"; } }
+            var f = Regex.Match(c, @"(?i)-File\s+(""[^""]+""|\S+)");
+            if (ps && f.Success) return "Running a PowerShell script: " + SafeName(f.Groups[1].Value);
+            c = Regex.Replace(c, @"(?i)(^|\s)(-NoProfile|-NonInteractive|-NoLogo|-NoExit|-ExecutionPolicy\s+\S+|-WindowStyle\s+\S+|-InputFormat\s+\S+|-OutputFormat\s+\S+|-Command|-c|/d|/s|/c|/k|/e:ON|/v:OFF)(?=\s|$)", " ");
+            for (int i = 0; i < 3; i++) c = TryPre.Replace(LangGuard.Replace(c, ""), " ");
+            c = c.Replace("^", "");
+            c = WinPath.Replace(c, "$1");
+            c = c.Replace("\\\"", "\"");
+            c = Regex.Replace(c, @"\s+", " ").Trim().Trim('"').Trim();
+            if (c.StartsWith("& ")) c = c.Substring(2);
+            if (c.StartsWith("call ")) c = c.Substring(5);
+            c = Redactor.Clean(c, 90);
+            if (c.Length == 0) return ps ? "Open PowerShell session (waiting for commands)" : "Open command prompt";
+            return "Running a " + kind + ": " + c;
+        }
+
+        void UpdateAgentApps()
+        {
+            var apps = new List<PInfo>();
+            foreach (var p in cache.Values)
+            {
+                if (!IsGuiApp(p)) { p.AgentApp = false; continue; }
+                p.AgentApp = true;
+                if (p.AppName == null) p.AppName = AppNameOf(p);
+                p.AppAgent = AgentShort(p);
+                string t; p.WinTitle = Windows.TryGetValue(p.Pid, out t) ? t : null;
+                if (p.Cpu >= 0.5) p.LastBusy = DateTime.Now;
+                apps.Add(p);
+                Episode e;
+                if (!OpenAppEps.TryGetValue(p.Key, out e))
+                {
+                    var st0 = p.Create > 0 ? p.StartLocal : DateTime.Now;
+                    foreach (var o in OpenAppEps.Values) if (o.Agent == p.AppAgent && o.Target == p.AppName && Math.Abs((o.Start - st0).TotalSeconds) < 120) { e = o; break; }
+                    if (e != null) { OpenAppEps[p.Key] = e; e.Count++; e.Proc = p.Name + " x" + e.Count; e.End = DateTime.Now; continue; }
+                }
+                if (!OpenAppEps.TryGetValue(p.Key, out e))
+                {
+                    var st = p.Create > 0 ? p.StartLocal : DateTime.Now;
+                    e = new Episode { Kind = "app", Start = st, End = DateTime.Now, Open = true, App = AppOf(p), Agent = p.AppAgent, Target = p.AppName, Proc = p.Name, Pid = p.Pid,
+                        Trigger = "started by " + (p.Parent != null ? p.Parent.Name + " (PID " + p.Parent.Pid + ")" : "?"), Detail = p.WinTitle != null ? "window: " + p.WinTitle : "no window (running in the background)" };
+                    OpenAppEps[p.Key] = e; History.Insert(0, e);
+                    if (!first) NewAppEps.Add(e);
+                    Logger.Event(string.Format("APP     | OPENED | {0} opened {1} | {2} PID {3} | {4} | cmd: {5}", e.Agent, e.Target, p.Name, p.Pid, e.Trigger, Redactor.Clean(p.Cmd, 300)));
+                }
+                else
+                {
+                    e.End = DateTime.Now; e.Agent = p.AppAgent;
+                    if (p.WinTitle != null) e.Detail = "window: " + p.WinTitle;
+                }
+            }
+            AgentApps = apps;
+            var gone = new List<string>();
+            var live = new HashSet<string>(); foreach (var a in apps) live.Add(a.Key);
+            foreach (var kv in OpenAppEps) if (!live.Contains(kv.Key)) gone.Add(kv.Key);
+            foreach (var k in gone)
+            {
+                var e = OpenAppEps[k]; OpenAppEps.Remove(k);
+                if (OpenAppEps.ContainsValue(e)) continue;
+                e.Open = false; e.End = DateTime.Now;
+                Logger.Event(string.Format("APP     | CLOSED | {0} closed {1} | PID {2} | open {3:h:mm:ss tt} - {4:h:mm:ss tt} ET", e.Agent, e.Target, e.Pid, e.Start, e.End));
+                try { Directory.CreateDirectory(Logger.Dir); File.AppendAllText(epFile, e.ToLine() + Environment.NewLine, Encoding.UTF8); } catch { }
+            }
+        }
+
+        string TargetFor(string app)
+        {
+            // foreground window first (an existing app being driven), then the newest app this agent opened
+            PInfo fg;
+            if (FgPid > 0 && FgPid != selfPid && cache.TryGetValue(FgPid, out fg))
+            {
+                bool own = AppOf(fg) == app && !fg.AgentApp;
+                bool shell = fg.Name.Equals("explorer.exe", StringComparison.OrdinalIgnoreCase) && string.IsNullOrEmpty(FgTitle);
+                if (!own && !shell && (fg.C == null || fg.AgentApp)) return (fg.AgentApp ? fg.AppName : AppNameOf(fg)) + (string.IsNullOrEmpty(FgTitle) ? "" : " (\"" + (FgTitle.Length > 50 ? FgTitle.Substring(0, 50) + "..." : FgTitle) + "\")");
+            }
+            PInfo best = null;
+            foreach (var p in AgentApps) if (AppOf(p) == app && (best == null || p.Create > best.Create)) best = p;
+            return best != null ? best.AppName : null;
+        }
+
         void UpdateEpisodes()
         {
             var activeByApp = new Dictionary<string, List<PInfo>>(StringComparer.OrdinalIgnoreCase);
@@ -656,23 +884,31 @@ namespace AgentWatch
                 if (!OpenEpisodes.TryGetValue(kv.Key, out e))
                 {
                     var p = kv.Value[0];
-                    e = new Episode { Start = p.LastActive, End = p.LastActive, Open = true, App = kv.Key, Agent = AgentOf(p), Proc = (p.E != null && p.E.Friendly != null ? p.E.Friendly : p.Name) + " (" + p.Name + ")", Pid = p.Pid, Trigger = p.ActiveReason };
+                    e = new Episode { Start = p.LastActive, End = p.LastActive, Open = true, App = kv.Key, Agent = AgentShort(p), Target = TargetFor(kv.Key), Proc = (p.E != null && p.E.Friendly != null ? p.E.Friendly : p.Name) + " (" + p.Name + ")", Pid = p.Pid, Trigger = p.ActiveReason };
                     OpenEpisodes[kv.Key] = e; NewEpisodes.Add(e); History.Insert(0, e);
-                    Logger.Event(string.Format("SCREEN  | START | {0} | agent: {1} | {2} PID {3} | {4}", e.App, e.Agent, e.Proc, e.Pid, e.Trigger));
+                    Logger.Event(string.Format("SCREEN  | START | {0} is controlling {1} | {2} PID {3} | {4}", e.Agent, e.Target ?? "the screen", e.Proc, e.Pid, e.Trigger));
                 }
                 foreach (var p in kv.Value)
                 {
                     if (p.LastActive > e.End) e.End = p.LastActive;
-                    string ag = AgentOf(p); if (!e.Agent.Contains(ag)) e.Agent += " + " + ag;
+                    string ag = AgentShort(p); if (!e.Agent.Contains(ag)) e.Agent += " + " + ag;
                 }
+                var tg = TargetFor(kv.Key); if (tg != null) e.Target = tg;
             }
             var closed = new List<string>();
-            foreach (var kv in OpenEpisodes) if (!activeByApp.ContainsKey(kv.Key)) closed.Add(kv.Key);
+            foreach (var kv in OpenEpisodes)
+            {
+                if (activeByApp.ContainsKey(kv.Key)) continue;
+                DateTime busy = DateTime.MinValue;
+                foreach (var a in AgentApps) if (AppOf(a) == kv.Key && a.LastBusy > busy) busy = a.LastBusy;
+                if ((DateTime.Now - busy).TotalSeconds < 20) { if (busy > kv.Value.End) kv.Value.End = busy; continue; }
+                closed.Add(kv.Key);
+            }
             foreach (var k in closed)
             {
                 var e = OpenEpisodes[k]; OpenEpisodes.Remove(k); e.Open = false;
                 try { if (e.App == "OpenBot") e.Detail = LogPeek.OpenBot(e.Start, e.End); } catch { }
-                Logger.Event(string.Format("SCREEN  | END   | {0} | agent: {1} | {2:h:mm:ss tt} - {3:h:mm:ss tt} ET | {4}", e.App, e.Agent, e.Start, e.End, e.Detail));
+                Logger.Event(string.Format("SCREEN  | END   | {0} was controlling {1} | {2:h:mm:ss tt} - {3:h:mm:ss tt} ET | {4}", e.Agent, e.Target ?? "the screen", e.Start, e.End, e.Detail));
                 try { Directory.CreateDirectory(Logger.Dir); File.AppendAllText(epFile, e.ToLine() + Environment.NewLine, Encoding.UTF8); } catch { }
             }
             while (History.Count > 100) History.RemoveAt(History.Count - 1);
@@ -842,7 +1078,7 @@ namespace AgentWatch
     {
         public string App; public List<PInfo> Roots = new List<PInfo>(); public List<PInfo> Procs = new List<PInfo>();
         public Level Lv = Level.Green; public string Sentence; public double Cpu, Ram;
-        public List<PInfo> ActiveCtrls = new List<PInfo>(), IdleCtrls = new List<PInfo>(), Yellows = new List<PInfo>();
+        public List<PInfo> ActiveCtrls = new List<PInfo>(), IdleCtrls = new List<PInfo>(), Yellows = new List<PInfo>(), Apps = new List<PInfo>();
         public bool Harmless, Infra; public string Category = "agent", Doing = "Idle";
     }
 
@@ -953,7 +1189,7 @@ namespace AgentWatch
             lv.Columns.Add("CPU %", Sc(58)); lv.Columns.Add("RAM MB", Sc(70)); lv.Columns.Add("Risk", Sc(150)); lv.Columns.Add("Path / command line", Sc(330));
             lv.Visible = false;
             SetupList(lvHist, Sc(22));
-            lvHist.Columns.Add("Screen-control history: started", Sc(190)); lvHist.Columns.Add("Ended", Sc(90)); lvHist.Columns.Add("Who (agent)", Sc(250)); lvHist.Columns.Add("Process", Sc(220)); lvHist.Columns.Add("What it was doing", Sc(300));
+            lvHist.Columns.Add("History: when", Sc(160)); lvHist.Columns.Add("Until", Sc(80)); lvHist.Columns.Add("Who", Sc(150)); lvHist.Columns.Add("What happened", Sc(230)); lvHist.Columns.Add("Process", Sc(170)); lvHist.Columns.Add("Details", Sc(300));
             lvHist.Dock = DockStyle.Bottom; lvHist.Height = Sc(150);
             var histSplit = new Splitter { Dock = DockStyle.Bottom, Height = Sc(4), BackColor = C_HEAD };
 
@@ -1218,17 +1454,47 @@ namespace AgentWatch
             foreach (var p in eng.Controllers) sb.AppendLine(string.Format("  {0} > {1} ({2}) PID {3} parent {4}({5}) started {6:yyyy-MM-dd HH:mm:ss} CPU {7:0.00}% {8}", Engine.AppOf(p), p.Name, p.E != null ? p.E.Friendly : p.C.Label, p.Pid, p.Parent != null ? p.Parent.Name : "?", p.Ppid, p.StartLocal, p.Cpu, p.Active ? "ACTIVE" : "idle (loaded)"));
             foreach (var r in eng.RemoteSessions) sb.AppendLine("  " + r);
             sb.AppendLine("Screen-control episodes (newest first):");
-            for (int i = 0; i < Math.Min(8, eng.History.Count); i++) { var e = eng.History[i]; sb.AppendLine(string.Format("  {0:yyyy-MM-dd HH:mm:ss} - {1} {2} - {3} | {4} PID {5} | {6} | {7}", e.Start, e.Open ? "(now)" : e.End.ToString("HH:mm:ss"), e.App, e.Agent, e.Proc, e.Pid, e.Trigger, e.Detail)); }
+            for (int i = 0; i < Math.Min(8, eng.History.Count); i++) { var e = eng.History[i]; sb.AppendLine(string.Format("  {0:yyyy-MM-dd HH:mm:ss} - {1} | {2} | {3} | {4} PID {5} | {6} | {7}", e.Start, e.Open ? "(now)" : e.End.ToString("HH:mm:ss"), e.Agent, e.What, e.Proc, e.Pid, e.Trigger, e.Detail)); }
+            sb.AppendLine("Agent-launched apps: " + string.Join("; ", eng.AgentApps.ConvertAll(a => a.AppName + " PID " + a.Pid + " by " + a.AppAgent + (a.WinTitle != null ? " [" + a.WinTitle + "]" : " [no window]"))));
+            sb.AppendLine("Foreground: PID " + eng.FgPid + " \"" + eng.FgTitle + "\"");
             sb.AppendLine("Hidden by category filter: " + string.Join(", ", allGroups.FindAll(g => !groups.Contains(g)).ConvertAll(g => g.App + " (" + g.Category + ")")));
             Logger.WriteText("status.txt", sb.ToString());
         }
 
-        static string Fr(PInfo p) { return p.E != null && p.E.Friendly != null ? p.E.Friendly : (p.C != null ? p.C.Label : p.Name); }
+        static string Fr(PInfo p)
+        {
+            if (p.AgentApp) return p.AppName + " (opened by " + p.AppAgent + ")";
+            string n = (p.Name ?? "").ToLowerInvariant();
+            if ((p.E != null && p.E.Id == "agent-shell") || (p.Root != null && (p.E == null || p.E.Id == "cmd-helper") && (n == "powershell.exe" || n == "pwsh.exe" || n == "cmd.exe" || n == "bash.exe")))
+            { var sum = Engine.ShellSummary(p); if (sum != null) return sum; }
+            return p.E != null && p.E.Friendly != null ? p.E.Friendly : (p.C != null ? p.C.Label : p.Name);
+        }
+        static string AppPhrase(PInfo a, bool busy) { return AppPhrase(a, busy, 1); }
+        static string AppPhrase(PInfo a, bool busy, int count)
+        {
+            return string.Format("{0} opened {1}{2} at {3:h:mm tt}{4}", Engine.Possessive(a.AppAgent), a.AppName, count > 1 ? " (" + count + " copies)" : "", a.StartLocal,
+                busy ? " and is working in it" : (a.WinTitle == null ? " (running in the background, no window)" : " - it is still open"));
+        }
+        // one phrase per agent+app, e.g. 4 background Blender renders -> one line
+        static List<string> AppPhrases(List<PInfo> apps)
+        {
+            var order = new List<string>(); var first = new Dictionary<string, PInfo>(); var cnt = new Dictionary<string, int>(); var busy = new Dictionary<string, bool>();
+            foreach (var a in apps)
+            {
+                string k = a.AppAgent + "|" + a.AppName;
+                if (!first.ContainsKey(k)) { first[k] = a; cnt[k] = 0; busy[k] = false; order.Add(k); }
+                cnt[k]++; if ((DateTime.Now - a.LastBusy).TotalSeconds < 20) busy[k] = true;
+                if (a.Create < first[k].Create) first[k] = a;
+            }
+            var res = new List<string>(); foreach (var k in order) res.Add(AppPhrase(first[k], busy[k], cnt[k]));
+            return res;
+        }
 
         void Collect(GroupInfo g, PInfo p, PInfo root, int depth)
         {
             g.Procs.Add(p); g.Cpu += p.Cpu; g.Ram += p.RamMB;
             if (p.C != null && p.C.Role == Role.Controller) { if (p.Active) g.ActiveCtrls.Add(p); else g.IdleCtrls.Add(p); }
+            else if (p.AgentApp) g.Apps.Add(p);
             else if (p.Lv == Level.Yellow) g.Yellows.Add(p);
             if (depth < 40) foreach (var k in p.Kids) if (k.Root == root) Collect(g, k, root, depth + 1);
         }
@@ -1270,6 +1536,7 @@ namespace AgentWatch
             else if (red.Count > 0) h = JoinAnd(red) + (red.Count == 1 ? " is" : " are") + " controlling or scanning your screen right now.";
             else h = "Nothing is controlling your screen right now.";
             h += string.Format(" {0} AI agent app{1} open.", ai, ai == 1 ? "" : "s");
+            if (eng.AgentApps.Count > 0) h = string.Join(". ", AppPhrases(eng.AgentApps)) + ". " + h;
             if (idle.Count > 0) h += string.Format(" {0} {1} a screen-control helper loaded but idle.", JoinAnd(idle), idle.Count == 1 ? "has" : "have");
             headlineText = h;
         }
@@ -1285,8 +1552,16 @@ namespace AgentWatch
         {
             if (g.ActiveCtrls.Count > 0)
             {
-                var names = new List<string>(); foreach (var p in g.ActiveCtrls) { string a = Engine.AgentOf(p); if (!names.Contains(a)) names.Add(a); }
-                return "CONTROLLING THE SCREEN (" + string.Join(", ", names) + ")";
+                Episode ep; eng.OpenEpisodes.TryGetValue(g.App, out ep);
+                string who = ep != null ? ep.Agent : eng.AgentShort(g.ActiveCtrls[0]);
+                return "CONTROLLING " + (ep != null && ep.Target != null ? ep.Target.ToUpper() : "THE SCREEN") + " (" + who + ")";
+            }
+            if (g.Apps.Count > 0)
+            {
+                var a = g.Apps[g.Apps.Count - 1]; foreach (var x in g.Apps) if (x.Create > a.Create) a = x;
+                int same = 0; foreach (var x in g.Apps) if (x.AppName == a.AppName) same++;
+                int others = g.Apps.Count - same;
+                return string.Format("Using {0}{1} (opened {2:h:mm tt} by {3}){4}", a.AppName, same > 1 ? " x" + same : "", a.StartLocal, a.AppAgent, others > 0 ? " +" + others + " other app" + (others > 1 ? "s" : "") : "");
             }
             var tools = new List<string>();
             var rootNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase); foreach (var r in g.Roots) rootNames.Add(r.Name);
@@ -1295,9 +1570,9 @@ namespace AgentWatch
                 if (rootNames.Contains(p.Name) || p.Name.Equals("conhost.exe", StringComparison.OrdinalIgnoreCase)) continue;
                 bool fresh = p.Create > 0 && (DateTime.Now - p.StartLocal).TotalSeconds < 60;
                 bool busyTool = p.Cpu >= 0.5 && p.E != null && (p.E.Category == "mcp" || p.E.Id == "agent-shell");
-                if (fresh || busyTool) { string f = p.E != null && p.E.Id == "agent-shell" ? p.Name : Fr(p); if (!tools.Contains(f)) tools.Add(f); }
+                if (fresh || busyTool) { string f = Fr(p); if (!tools.Contains(f)) tools.Add(f); }
             }
-            if (tools.Count > 0) return "Running tools (" + string.Join(", ", tools.GetRange(0, Math.Min(2, tools.Count))) + (tools.Count > 2 ? ", ..." : "") + ")";
+            if (tools.Count > 0) return tools.Count == 1 ? tools[0] : "Running tools (" + string.Join("; ", tools.GetRange(0, Math.Min(2, tools.Count))) + (tools.Count > 2 ? "; ..." : "") + ")";
             if (g.Cpu >= 0.5) return string.Format("Working / thinking ({0:0.0}% CPU)", g.Cpu);
             return "Idle";
         }
@@ -1309,10 +1584,12 @@ namespace AgentWatch
             {
                 var p = g.ActiveCtrls[0];
                 bool log = eng.OpenBotScanning && g.App == "OpenBot";
-                return string.Format("{0} is using your screen right now: {1} ({2:0.0}% CPU{3}).", g.App, Fr(p), p.Cpu,
+                Episode ep; eng.OpenEpisodes.TryGetValue(g.App, out ep);
+                return string.Format("{0} is controlling {1} right now through {2} ({3:0.0}% CPU{4}).", ep != null ? ep.Agent : eng.AgentShort(p), ep != null && ep.Target != null ? ep.Target : "your screen", Fr(p), p.Cpu,
                     log ? ", scanning windows " + (int)(DateTime.Now - eng.CuaLogWrite).TotalSeconds + "s ago" : "");
             }
             var sb = new StringBuilder();
+            foreach (var ph in AppPhrases(g.Apps)) sb.Append(ph).Append(". ");
             sb.Append(g.App).Append(" is open");
             if (g.IdleCtrls.Count > 0)
             {
@@ -1333,7 +1610,7 @@ namespace AgentWatch
                     sb.AppendFormat("; {0} part{1} that can act for you ({2}{3})", other, other == 1 ? "" : "s", string.Join(", ", o), names.Count - (mcp > 0 ? 1 : 0) > 2 ? ", ..." : "");
                 }
             }
-            if (g.IdleCtrls.Count == 0 && g.Yellows.Count == 0) sb.Append(" and running normally");
+            if (g.IdleCtrls.Count == 0 && g.Yellows.Count == 0 && g.Apps.Count == 0) sb.Append(" and running normally");
             sb.AppendFormat(". {0} process{1}.", g.Procs.Count, g.Procs.Count == 1 ? "" : "es");
             return sb.ToString();
         }
@@ -1356,15 +1633,18 @@ namespace AgentWatch
                 state = newState;
             }
             string tip = headlineText.Length > 0 ? headlineText : "Agent Watch";
-            foreach (var e in eng.OpenEpisodes.Values) { tip = "SCREEN: " + e.App + " - " + e.Agent; break; }
+            foreach (var a in eng.AgentApps) { tip = a.AppAgent + " opened " + a.AppName; break; }
+            foreach (var e in eng.OpenEpisodes.Values) { tip = e.Agent + " is controlling " + (e.Target ?? "the screen"); break; }
             if (tip.Length > 63) tip = tip.Substring(0, 60) + "...";
             if (tip != lastTip) { tray.Text = tip; lastTip = tip; }
 
             if (eng.FirstTick) return;
             foreach (var p in eng.NewControllers)
                 Balloon("Screen-control helper loaded", string.Format("{0}: {1} (PID {2}) started{3}.", Engine.AppOf(p), Fr(p), p.Pid, p.Parent != null ? " by " + p.Parent.Name : ""), ToolTipIcon.Info);
+            foreach (var e in eng.NewAppEps)
+            { lastBalloon = DateTime.MinValue; Balloon(e.Agent + " opened " + e.Target, string.Format("At {0:h:mm:ss tt} ET ({1}, PID {2}). {3}", e.Start, e.Proc, e.Pid, e.Detail), ToolTipIcon.Warning); }
             foreach (var e in eng.NewEpisodes)
-            { lastBalloon = DateTime.MinValue; Balloon(e.App + " is controlling your screen", string.Format("{0} via {1} (PID {2}) at {3:h:mm:ss tt} ET. {4}", e.Agent, e.Proc, e.Pid, e.Start, e.Trigger), ToolTipIcon.Warning); }
+            { lastBalloon = DateTime.MinValue; Balloon(e.Agent + " is controlling " + (e.Target ?? "your screen"), string.Format("At {0:h:mm:ss tt} ET via {1} (PID {2}). {3}", e.Start, e.Proc, e.Pid, e.Trigger), ToolTipIcon.Warning); }
             if (eng.NewEpisodes.Count == 0) foreach (var p in eng.NewlyActive)
                 Balloon(Engine.AppOf(p) + " is using your screen", string.Format("{0} (PID {1}) is active{2}. Click for details.", Fr(p), p.Pid, eng.OpenBotScanning && Engine.AppOf(p) == "OpenBot" ? " and scanning your windows" : ""), ToolTipIcon.Warning);
         }
@@ -1391,15 +1671,20 @@ namespace AgentWatch
             if (eng.OpenEpisodes.Count > 0)
             {
                 var parts = new List<string>();
-                foreach (var e in eng.OpenEpisodes.Values) parts.Add(string.Format("{0} - {1} (since {2:h:mm:ss tt} ET, {3} PID {4})", e.App, e.Agent, e.Start, e.Proc, e.Pid));
-                t = "\u25CF CONTROLLING YOUR SCREEN NOW: " + string.Join("  |  ", parts);
+                foreach (var e in eng.OpenEpisodes.Values) parts.Add(string.Format("{0} is controlling {1} (since {2:h:mm:ss tt} ET)", e.Agent, e.Target ?? "your screen", e.Start));
+                t = "\u25CF " + string.Join("  |  ", parts);
                 b = Color.FromArgb(190, 18, 60); f = Color.White;
             }
             else if (eng.RemoteSessions.Count > 0) { t = "\u25CF " + eng.RemoteSessions[0]; b = Color.FromArgb(190, 18, 60); f = Color.White; }
+            else if (eng.AgentApps.Count > 0)
+            {
+                t = "\u25CF " + string.Join("  |  ", AppPhrases(eng.AgentApps)) + ".";
+                b = Color.FromArgb(180, 83, 9); f = Color.White;
+            }
             else if (eng.History.Count > 0)
             {
                 var e = eng.History[0];
-                t = string.Format("Nobody is controlling the screen now.   Last time: {0} - {1}, {2:MMM d h:mm:ss tt} to {3:h:mm:ss tt} ET ({4}).", e.App, e.Agent, e.Start, e.End, e.Proc);
+                t = string.Format("Nobody is controlling the screen now.   Last: {0} - {1}, {2:MMM d h:mm:ss tt} to {3:h:mm:ss tt} ET.", e.Agent, e.What.Replace(" (still open)", ""), e.Start, e.End);
                 b = C_PANEL2; f = C_TEXT;
             }
             else { t = "Nobody is controlling the screen now. No screen-control activity seen yet."; b = C_PANEL2; f = C_DIM; }
@@ -1409,14 +1694,15 @@ namespace AgentWatch
 
         void BuildHistory()
         {
-            int sig = eng.History.Count * 31 + (eng.History.Count > 0 ? eng.History[0].End.GetHashCode() + (eng.History[0].Open ? 7 : 0) + eng.History[0].Detail.Length : 0);
+            int sig = eng.History.Count * 31; for (int i = 0; i < Math.Min(5, eng.History.Count); i++) { var h = eng.History[i]; sig = sig * 17 + h.End.ToString().GetHashCode() + (h.Open ? 7 : 0) + (h.Detail ?? "").Length + (h.Target ?? "").GetHashCode(); }
             if (sig == histSig) return; histSig = sig;
             var list = new List<Row>();
             foreach (var e in eng.History)
             {
-                string what = e.Detail != null && e.Detail.Length > 0 ? e.Detail : (e.Open ? "in progress - " + e.Trigger : e.Trigger);
-                list.Add(new Row { Key = "h:" + e.Start.Ticks + e.App, T = new[] { e.Start.ToString("MMM d  h:mm:ss tt") + " ET", e.Open ? "now" : e.End.ToString("h:mm:ss tt"), e.App + " - " + e.Agent, e.Proc + " PID " + e.Pid, what },
-                    Back = e.Open ? C_REDROW : C_LIST, Fore = Color.White, Bold = e.Open, Ep = e });
+                string det = (e.Trigger ?? "") + (string.IsNullOrEmpty(e.Detail) ? "" : "; " + e.Detail);
+                bool red = e.Open && e.Kind != "app";
+                list.Add(new Row { Key = "h:" + e.Kind + e.Start.Ticks + e.Pid, T = new[] { e.Start.ToString("MMM d  h:mm:ss tt") + " ET", e.Open ? "now" : e.End.ToString("h:mm:ss tt"), e.Agent, e.What, e.Proc + " PID " + e.Pid, det },
+                    Back = red ? C_REDROW : e.Open ? Color.FromArgb(120, 53, 15) : C_LIST, Fore = Color.White, Bold = e.Open, Ep = e });
             }
             ApplyRows(lvHist, list);
         }
@@ -1457,16 +1743,19 @@ namespace AgentWatch
             if (show)
             {
                 string indent = new string(' ', (depth - 1) * 4) + (depth > 1 ? "\u2514 " : "");
-                string label = p.E != null && p.E.Friendly != null ? "  \u2014 " + p.E.Friendly : (p.C != null ? "  \u2014 " + p.C.Label : "  \u2014 (unknown)");
-                if (p.MatchedParent != null && p.E != null && p.MatchedParent.E == p.E) label = "";
+                string fr = Fr(p);
+                string label = p.AgentApp || fr.StartsWith("Running a") || fr.StartsWith("Open ") ? "  \u2014 " + fr : p.E != null && p.E.Friendly != null ? "  \u2014 " + p.E.Friendly : (p.C != null ? "  \u2014 " + p.C.Label : "  \u2014 (unknown)");
+                if (!p.AgentApp && p.MatchedParent != null && p.E != null && p.MatchedParent.E == p.E) label = "";
                 string pill; Level lvl = p.Lv;
                 if (p.C != null && p.C.Role == Role.Controller) pill = p.Active ? "RED - controlling now" : "YELLOW - loaded, idle";
+                else if (p.AgentApp) pill = lvl == Level.Red ? "RED - being controlled" : "YELLOW - agent is using it";
                 else pill = p.E == null && p.C == null ? "UNKNOWN" : LevelWord(lvl);
-                Color back = lvl == Level.Red ? C_REDROW : depth == 1 ? C_ROOT : C_CHILD;
-                Color fore = p.E == null && p.C == null ? C_DIM : C_TEXT;
+                Color back = lvl == Level.Red ? C_REDROW : depth == 1 ? C_ROOT : C_CHILD; bool bold = false;
+                Color fore = p.E == null && p.C == null && !p.AgentApp ? C_DIM : C_TEXT;
+                if (p.AgentApp) { bold = true; if (lvl != Level.Red) back = Color.FromArgb(120, 53, 15); }
                 string started = p.Create > 0 ? (p.StartLocal.Date == DateTime.Today ? p.StartLocal.ToString("h:mm:ss tt") : p.StartLocal.ToString("MMM d h:mm tt")) : "";
                 string cmd = !string.IsNullOrEmpty(p.Cmd) ? Redactor.Clean(p.Cmd, 300) : (p.Path ?? "");
-                list.Add(new Row { Key = "p:" + p.Key, P = p, Back = back, Fore = fore, Bold = depth == 1 || lvl == Level.Red, PillCol = 5, PillLevel = lvl, PillText = pill,
+                list.Add(new Row { Key = "p:" + p.Key, P = p, Back = back, Fore = fore, Bold = bold || depth == 1 || lvl == Level.Red, PillCol = 5, PillLevel = lvl, PillText = pill,
                     T = new[] { indent + p.Name + label, p.Pid.ToString(), started, p.Cpu.ToString("0.0"), p.RamMB.ToString("0"), pill, cmd } });
             }
             if (depth > 40) return;
@@ -1515,9 +1804,9 @@ namespace AgentWatch
             if (row == null) body = "Select a row to see, in plain English, what it is, why it is running, how risky it is, and what to do about it.\r\n\r\nDouble-click an app (or tick 'Show details') to see every process it runs.";
             else if (row.Ep != null)
             {
-                var e = row.Ep; title = "Screen control by " + e.App; lvl = e.Open ? Level.Red : Level.Yellow;
-                badge = e.Open ? "  RED - happening now" : "  Past episode";
-                body = string.Format("Who: {0} - {1}\r\nProcess: {2}, PID {3}\r\nStarted: {4:MMM d, h:mm:ss tt} ET\r\nEnded: {5}\r\nWhat set it off: {6}\r\n\r\nWhat it was doing: {7}\r\n\r\nEvery episode is saved in D:\\DEBUGGING LOGS\\AgentWatch\\screen-episodes.tsv and events.log.",
+                var e = row.Ep; title = e.Agent + ": " + e.What; lvl = e.Open && e.Kind != "app" ? Level.Red : Level.Yellow;
+                badge = e.Open ? (e.Kind == "app" ? "  YELLOW - agent is using an app" : "  RED - happening now") : "  Past";
+                body = string.Format("What happened: " + e.What + "\r\nWho: {0} - {1}\r\nProcess: {2}, PID {3}\r\nStarted: {4:MMM d, h:mm:ss tt} ET\r\nEnded: {5}\r\nHow it started: {6}\r\n\r\nDetails: {7}\r\n\r\nEvery episode is saved in D:\\DEBUGGING LOGS\\AgentWatch\\screen-episodes.tsv and events.log.",
                     e.App, e.Agent, e.Proc, e.Pid, e.Start, e.Open ? "still going" : e.End.ToString("h:mm:ss tt") + " ET", e.Trigger, string.IsNullOrEmpty(e.Detail) ? (e.Open ? "(filled in when it ends, from the app's logs where available)" : "no extra detail in the app's logs") : e.Detail);
             }
             else if (row.G != null && row.P == null)
@@ -1553,7 +1842,13 @@ namespace AgentWatch
                 title = (e != null && e.Friendly != null ? e.Friendly : p.Name);
                 var sb = new StringBuilder();
                 sb.AppendFormat("{0}  (PID {1})  -  part of {2}\r\n", p.Name, p.Pid, Engine.AppOf(p));
-                if (p.C != null && p.C.Role == Role.Controller)
+                if (p.AgentApp)
+                {
+                    title = p.AppName + " - opened by " + p.AppAgent;
+                    badge = lvl == Level.Red ? "  RED - an agent is controlling it now" : "  YELLOW - an agent is using this app";
+                    sb.AppendFormat("{0}.\r\n{1}\r\n", AppPhrase(p, (DateTime.Now - p.LastBusy).TotalSeconds < 20), p.WinTitle != null ? "Window: " + p.WinTitle : "No window - it is running in the background.");
+                }
+                else if (p.C != null && p.C.Role == Role.Controller)
                 {
                     badge = p.Active ? "  RED - controlling / scanning your screen now" : "  YELLOW - screen helper loaded, idle";
                     sb.AppendFormat("Right now: {0} ({1:0.0}% CPU{2}).\r\n", p.Active ? "ACTIVE" : "idle", p.Cpu,
@@ -1561,13 +1856,15 @@ namespace AgentWatch
                 }
                 else badge = e == null && p.C == null ? "  UNKNOWN" : "  " + LevelWord(lvl) + (lvl == Level.Yellow ? " - can act on your behalf" : " - normal");
                 sb.Append("\r\n");
+                var shellSum = Fr(p);
+                if (shellSum.StartsWith("Running a") || shellSum.StartsWith("Open PowerShell")) sb.Append("Right now: ").Append(shellSum).Append("\r\n\r\n");
                 if (e != null)
                 {
                     if (e.What != null) sb.Append("What it does: ").Append(e.What).Append("\r\n\r\n");
                     if (e.Why != null) sb.Append("Why it's running: ").Append(e.Why).Append("\r\n\r\n");
                     if (e.Todo != null) sb.Append("What to do: ").Append(e.Todo).Append("\r\n\r\n");
                 }
-                else
+                else if (!p.AgentApp)
                 {
                     sb.Append("Unknown - not in the explanation list yet.\r\n\r\n");
                     if (p.Parent != null) sb.AppendFormat("It was started by {0}{1}.\r\n\r\n", p.Parent.Name, p.Parent.E != null && p.Parent.E.Friendly != null ? " (" + p.Parent.E.Friendly + ")" : "");

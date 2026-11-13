@@ -10,6 +10,8 @@ If a computer-use window suddenly pops up, Agent Watch tells you who it was (Cod
 
 ## What you see
 
+- **Apps an agent opened, front and centre**: any program started by an agent (e.g. Blender launched by OpenBot's Gemini agent through PowerShell) is attributed to the specific sub-agent by walking the parent chain. The banner and sentence read *"OpenBot's Gemini agent opened Blender at 9:55 PM"*, the *Doing now* column reads *"Using Blender (opened 9:55 PM by OpenBot (Gemini))"*, a toast says *"OpenBot (Gemini) opened Blender"*, and the history gets an *Opened Blender* row (several copies started together are grouped into one row). While a screen helper is active the banner says *"OpenBot (Gemini) is controlling Blender"* (the target is the foreground app, falling back to the app the agent launched most recently).
+- **Shell commands in plain words**: an agent's PowerShell / cmd / bash processes show a short, redacted summary, e.g. *"Running a PowerShell script: render.ps1"* or *"Running a PowerShell command: Start-Process blender ..."*.
 - **Banner – "Who's controlling the screen"**: turns red and names the app and agent (e.g. `OpenBot - OpenBot agent: Gemini (Antigravity)`) the moment a screen-control helper becomes active, with a toast notification. Otherwise shows the last time it happened.
 - **Summary** (default): one row per AI agent app with a risk badge, a *Doing now* line (Idle / Working / Running tools / CONTROLLING THE SCREEN) and a plain-English sentence.
 - **Show details**: the full process tree for every agent (PID, start time, CPU, RAM, command line with secrets redacted). Right-click or use *Kill selected process…* (always asks first; nothing is ever killed automatically).
@@ -21,7 +23,7 @@ If a computer-use window suddenly pops up, Agent Watch tells you who it was (Cod
 | Level | Meaning |
 |---|---|
 | **RED** | Something is controlling or scanning the screen right now (screen-control helper using CPU, spawning processes, or OpenBot's `cua-driver.log` written in the last ~30 s), or an incoming Remote Desktop session. |
-| **YELLOW** | Can act on your behalf: agent engines, shells an agent opened, MCP tool servers, network tunnels — or a screen-control helper that is *loaded but idle*. |
+| **YELLOW** | An app an agent opened (never green; red while a screen helper is active). Can act on your behalf: agent engines, shells an agent opened, MCP tool servers, network tunnels — or a screen-control helper that is *loaded but idle*. |
 | **GREEN** | Normal helper (app windows, renderers, consoles). |
 
 The tray icon follows the highest level: indigo (nothing), green, amber, blinking red.
@@ -47,7 +49,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1   # Startup + Desktop sho
 Default folder: `D:\DEBUGGING LOGS\AgentWatch` (change `Logger.Dir` in `AgentWatch.cs`).
 
 - `events.log` – agent / screen-controller START, STOP, ACTIVE, IDLE, SCREEN START/END and KILLED lines with time, PID, parent chain, path and a short, redacted command line. Rotates at 5 MB.
-- `screen-episodes.tsv` – one line per screen-control episode (reloaded into the history panel on start).
+- `events.log` also gets `APP | OPENED` / `APP | CLOSED` lines for apps agents launch.
+- `screen-episodes.tsv` – one line per screen-control or app episode (reloaded into the history panel on start).
 - `status.txt` – a snapshot rewritten every 30 s.
 
 ## Extending `explanations.json`
