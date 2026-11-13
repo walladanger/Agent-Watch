@@ -6,7 +6,8 @@ $csc = Join-Path $fw 'csc.exe'
 $wpf = Join-Path $fw 'WPF'
 $out = Join-Path $here 'AgentWatch.exe'
 $src = Join-Path $here 'src'
-$ico = Join-Path $here 'AgentWatch.ico'
+$eyes = Join-Path $here 'Eyes'   # mascot eyes: rendering, moods, icons (kept apart so they can't be lost)
+$ico = Join-Path $eyes 'AgentWatch.ico'
 $cargs = New-Object System.Collections.Generic.List[string]
 foreach ($a in @('/nologo', '/target:winexe', '/optimize+', '/platform:x64', '/nowarn:0169,0414,0649', "/out:$out", "/win32icon:$ico")) { $cargs.Add($a) }
 foreach ($r in @('System.dll', 'System.Core.dll', 'System.Xml.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll', 'System.Web.Extensions.dll', 'System.Xaml.dll')) { $cargs.Add("/r:$fw\$r") }
@@ -14,6 +15,7 @@ foreach ($r in @('PresentationFramework.dll', 'PresentationCore.dll', 'WindowsBa
 foreach ($x in @('Theme.xaml', 'Main.xaml')) { $cargs.Add("/resource:$src\$x,$x") }
 $cargs.Add("/resource:$ico,AgentWatch.ico")
 Get-ChildItem $src -Filter *.cs | ForEach-Object { $cargs.Add($_.FullName) }
+Get-ChildItem $eyes -Filter *.cs | ForEach-Object { $cargs.Add($_.FullName) }
 & $csc $cargs.ToArray()
 if ($LASTEXITCODE -ne 0) { throw "csc failed ($LASTEXITCODE)" }
 Write-Output "Built $out"

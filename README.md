@@ -33,9 +33,15 @@ If a computer-use window suddenly pops up, Agent Watch tells you who it was (Cod
 - **Explanation pane**: select any row to read what it is, why it is running, how risky it is and what to do. Unknown processes get an *Add note* button that adds a stub rule to `explanations.json`.
 - **Screen-control history**: every episode with start/end time, agent, process, what set it off, and what it was doing (OpenBot: `cua-driver.log` and chat-turn events from `trace.ndjson`).
 
+## Source layout
+
+- `src/` – the app (engine, window, tree, details, appearance, danger rules UI).
+- `Eyes/` – everything about the mascot eyes: rendering and shading (`EyesControl.cs`), moods and animations (`EyeMoods.cs`), tray/window icons (`EyeIcon.cs`), `AgentWatch.ico` and its generator `make_icon.py`. See `Eyes/README.md`. `build.ps1` compiles both folders.
+- A read-only mirror of `Eyes/` is kept at `D:\TOOLS\AgentWatch-Eyes-Safe\` (outside the build), in addition to git.
+
 ## Design rules
 
-- **The eyes always keep their shaded centre.** Each eye is a vertical capsule slit with dark edges and a lighter, softly lit middle plus a faint centre glint – in every state (idle, bored, asleep, mad/rage, nervous amber, danger red, poked) and in every icon (`AgentWatch.ico`, the taskbar/window icon, the tray icon, the Desktop and Startup shortcuts). Never flat solid black: that is what OpenBot / Grok Bot do, and Agent Watch's eyes must stay distinct.
+- **The eyes always keep their shaded centre.** Each eye is a vertical capsule slit with dark edges and a lighter, softly lit middle plus a faint centre glint – in every state (idle, bored, asleep, mad/rage, nervous amber, danger red, poked) and in every icon (`Eyes/AgentWatch.ico`, the taskbar/window icon, the tray icon, the Desktop and Startup shortcuts). Never flat solid black: that is what OpenBot / Grok Bot do, and Agent Watch's eyes must stay distinct.
 - No pupils, irises or whites: all emotion comes from the slit's height, width, tilt, lids and position.
 - No white native chrome anywhere; scrollbars, headers, splitters and dialogs are themed.
 - Never kill anything automatically; kill buttons always ask first.

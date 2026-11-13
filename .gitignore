@@ -12,6 +12,7 @@ settings.json
 status.txt
 screenshot*.png
 shot-request.txt
+icon-preview.png
 logs/
 # secrets (never commit)
 .env
