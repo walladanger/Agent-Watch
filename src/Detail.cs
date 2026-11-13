@@ -148,6 +148,7 @@ namespace AgentWatch
                 statePill.Background = soft; stateText.Text = "WATCHING"; stateText.Foreground = txt; stateSince.Text = "eyes on " + groups.Count + " app" + (groups.Count == 1 ? "" : "s");
                 headerGlow.Opacity = 0;
             }
+            ApplyPausedHeader();
             eyes.Target = target;
         }
 

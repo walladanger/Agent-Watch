@@ -141,9 +141,9 @@ namespace AgentWatch
             b.Children.Add(fp);
 
             b.Children.Add(Sl("Panel transparency", Settings.Transparency, v => Settings.Transparency = v, true));
-            b.Children.Add(Hint("How much of the window background shows through the panels. Panels never drop below a readable tint."));
+            b.Children.Add(Hint("How see-through the cards are. At high values the cards nearly vanish and the text gets a soft shadow so it stays readable."));
             b.Children.Add(Sl("Blur behind the window", Settings.Blur, v => Settings.Blur = v, true));
-            b.Children.Add(Hint("0 = solid. 1-49 = Windows 11 Mica (soft tinted wallpaper). 50-100 = Acrylic (blurs what is behind the window). Windows decides the blur strength; raise panel transparency to see more of it."));
+            b.Children.Add(Hint("0 = off (solid background). 1-100 = Windows blurs whatever is behind the window; the slider sets how much of that blur shows through the background (100 = mostly blur, low = mostly solid tint). It stays on even when the window is not focused. Raise panel transparency to see it behind the cards too."));
             b.Children.Add(Sw("Eyes follow the mouse", Settings.EyesFollow, v => { Settings.EyesFollow = v; eyes.Follow = v; }));
             b.Children.Add(Sw("Allow motion effects: shakes and the occasional glint (off = reduced motion)", Settings.AllowShake, v => { Settings.AllowShake = v; eyes.AllowShake = v; }));
 
@@ -163,9 +163,10 @@ namespace AgentWatch
             var t4 = new Button { Content = "Bored eyes", Style = St("Btn") }; t4.Click += delegate { ToggleAppearance(); eyes.PreviewMood(Mood.Bored, 12); };
             var t5 = new Button { Content = "Rage shake", Style = St("Btn") }; t5.Click += delegate { ToggleAppearance(); eyes.PreviewMood(Mood.Mad, 8); };
             var t7 = new Button { Content = "Falling asleep", Style = St("Btn") }; t7.Click += delegate { ToggleAppearance(); eyes.PreviewSleep(); };
+            var t8 = new Button { Content = "Glint", Style = St("Btn"), ToolTip = "One sweep of the glint now (works even with reduced motion)" }; t8.Click += delegate { ToggleAppearance(); StartGlint(); };
             var t3 = new Button { Content = "Stop preview", Style = St("Btn") }; t3.Click += delegate { StopPreview(); };
             var t6 = new Button { Content = "Poked (click again to escalate)", Style = St("Btn") }; t6.Click += delegate { eyes.Poke(); };
-            tw.Children.Add(t1); tw.Children.Add(t2); tw.Children.Add(t4); tw.Children.Add(t5); tw.Children.Add(t7); tw.Children.Add(t6); tw.Children.Add(t3);
+            tw.Children.Add(t1); tw.Children.Add(t2); tw.Children.Add(t4); tw.Children.Add(t5); tw.Children.Add(t7); tw.Children.Add(t8); tw.Children.Add(t6); tw.Children.Add(t3);
             b.Children.Add(tw);
             b.Children.Add(Hint("Settings are saved to settings.json next to AgentWatch.exe."));
         }
@@ -197,8 +198,19 @@ namespace AgentWatch
         // ---------- screenshot ----------
         public void TakeScreenshot(string path, string mode)
         {
-            bool wasVisible = IsShown;
+            bool wasVisible = IsShown, wasMin = IsVisible && WindowState == WindowState.Minimized;
             ShowMain(); Topmost = true;
+            // "real:<mode>" grabs the actual screen pixels (shows the blur behind); otherwise the WPF tree is rendered on its own
+            bool real = mode.StartsWith("real:"); if (real) mode = mode.Substring(5);
+            // "blur:<0-100>[:<transparency>]" temporarily changes blur (and panel transparency) for the picture only
+            double oldBlur = double.NaN, oldTr = double.NaN;
+            if (mode.StartsWith("blur:"))
+            {
+                var bp = mode.Split(':'); oldBlur = Settings.Blur; oldTr = Settings.Transparency;
+                double v; if (bp.Length > 1 && double.TryParse(bp[1], out v)) Settings.Blur = v;
+                if (bp.Length > 2 && double.TryParse(bp[2], out v)) Settings.Transparency = v;
+                mode = bp.Length > 3 ? bp[3] : "normal"; ApplyTheme();
+            }
             // "theme:<preset>[:<finish>]" previews a look for the picture only; the saved settings are restored afterwards
             string oldPreset = null, oldFinish = null;
             if (mode.StartsWith("theme:"))
@@ -224,11 +236,26 @@ namespace AgentWatch
                 if (pick == null) foreach (var v in rowItems) if (v.IsApp) { pick = v; break; }
                 if (pick != null) { if (!pick.Expanded) Toggle(pick); int i = rowItems.IndexOf(pick); rows.SelectedIndex = Math.Min(rowItems.Count - 1, i + 1); rows.ScrollIntoView(rows.SelectedItem); }
             }
-            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(mode.StartsWith("poked") ? 1300 : mode == "asleep" ? 5200 : mode == "waking" ? 7700 : mode == "rage" ? 1000 : 2400) };
+            var t = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(mode.StartsWith("poked") ? 1300 : mode == "asleep" ? 5200 : mode == "waking" ? 7700 : mode == "rage" ? 1000 : mode == "glint" ? 900 : mode == "snapshot" ? 250 : 2400) };
             t.Tick += delegate
             {
                 t.Stop();
-                try
+                if (mode == "glint") GlintMid();
+                if (real)
+                {
+                    try
+                    {
+                        RECT wr; GetWindowRect(hwnd, out wr);
+                        using (var bmp = new SD.Bitmap(Math.Max(1, wr.R - wr.L), Math.Max(1, wr.B - wr.T)))
+                        {
+                            using (var gr = SD.Graphics.FromImage(bmp)) gr.CopyFromScreen(wr.L, wr.T, 0, 0, bmp.Size);
+                            bmp.Save(path, SD.Imaging.ImageFormat.Png);
+                        }
+                        Logger.Event("SCREENSHOT (screen pixels) saved to " + path + " (" + mode + ")");
+                    }
+                    catch (Exception ex) { Logger.Error("screenshot: " + ex); }
+                }
+                else try
                 {
                     // render the WPF tree itself, so other windows on top never end up in the picture
                     var root = (FrameworkElement)Content;
@@ -249,10 +276,12 @@ namespace AgentWatch
                 }
                 catch (Exception ex) { Logger.Error("screenshot: " + ex); }
                 Topmost = false;
+                if (mode == "glint") GlintMidDone();
+                if (!double.IsNaN(oldBlur)) { Settings.Blur = oldBlur; Settings.Transparency = oldTr; ApplyTheme(); }
                 if (oldPreset != null) { Settings.Preset = oldPreset; Settings.Finish = oldFinish; ApplyTheme(); }
                 if (mode == "nervous" || mode == "danger" || mode == "bored" || mode == "mad" || mode == "asleep" || mode == "waking" || mode == "rage") StopPreview();
                 if (mode == "appearance" && appear.Visibility == Visibility.Visible) ToggleAppearance();
-                if (!wasVisible) Hide();
+                if (wasMin) WindowState = WindowState.Minimized; else if (!wasVisible) Hide();
             };
             t.Start();
         }
@@ -309,7 +338,8 @@ namespace AgentWatch
                         {
                             string m = "normal"; try { m = File.ReadAllText(req).Trim(); File.Delete(req); } catch { }
                             string file = m == "normal" ? "screenshot.png" : "screenshot-" + System.Text.RegularExpressions.Regex.Replace(m, "[^a-z0-9]+", "-") + ".png";
-                            win.Dispatcher.BeginInvoke(new Action(delegate { win.TakeScreenshot(Path.Combine(Logger.Dir, file), m); }));
+                            if (m == "measure") win.Dispatcher.BeginInvoke(new Action(delegate { win.MeasureCpu(); }));
+                            else win.Dispatcher.BeginInvoke(new Action(delegate { win.TakeScreenshot(Path.Combine(Logger.Dir, file), m); }));
                         }
                     }
                     catch { }

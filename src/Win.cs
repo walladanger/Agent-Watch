@@ -60,7 +60,8 @@ namespace AgentWatch
         public MainWin()
         {
             Words.Eng = eng;
-            Title = "Agent Watch"; WindowStyle = WindowStyle.SingleBorderWindow; ResizeMode = ResizeMode.CanResize;
+            // per-pixel-alpha (layered) window: the only way the blur behind can show through WPF content (a normal WPF window paints over it)
+            Title = "Agent Watch"; WindowStyle = WindowStyle.None; AllowsTransparency = true; ResizeMode = ResizeMode.CanResize;
             Background = Brushes.Transparent; MinWidth = 900; MinHeight = 560;
             Width = Math.Max(900, Settings.W); Height = Math.Max(560, Settings.H);
             if (!double.IsNaN(Settings.X)) { WindowStartupLocation = WindowStartupLocation.Manual; Left = Settings.X; Top = Settings.Y; } else WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -84,7 +85,7 @@ namespace AgentWatch
             F<Button>("BtnAppearClose").Click += delegate { ToggleAppearance(); };
             F<Button>("BtnExpand").Click += delegate { foreach (var g in groups) Settings.Expanded.Add(g.App); collapsedProcs.Clear(); Settings.Save(); RefreshRows(); };
             F<Button>("BtnCollapse").Click += delegate { Settings.Expanded.Clear(); Settings.Save(); RefreshRows(); };
-            F<Button>("BtnLogs").Click += delegate { OpenLogs(); };
+            BuildHeader();
             F<Button>("BtnRules").Click += delegate { try { Process.Start("notepad.exe", "\"" + Explainer.FilePath + "\""); } catch { } };
             BindSwitch("ChkModels", Settings.ShowModelServers, v => Settings.ShowModelServers = v);
             BindSwitch("ChkHelpers", Settings.ShowHelpers, v => Settings.ShowHelpers = v);
@@ -111,13 +112,13 @@ namespace AgentWatch
             StateChanged += delegate
             {
                 maxGlyph.Text = WindowState == WindowState.Maximized ? "\uE923" : "\uE922";
-                layout.Margin = WindowState == WindowState.Maximized ? new Thickness(16, 6, 16, 16) : new Thickness(10, 0, 10, 10);
+                layout.Margin = new Thickness(10, 0, 10, 10); UpdateShape();
                 if (WindowState != WindowState.Minimized) { Settings.Maximized = WindowState == WindowState.Maximized; }
                 UpdateAnim();
             };
             IsVisibleChanged += delegate { UpdateAnim(); if (IsVisible) RefreshRows(); };
             Closing += delegate (object s, System.ComponentModel.CancelEventArgs e) { if (!exiting) { e.Cancel = true; HideMain(); } };
-            SizeChanged += delegate { if (WindowState == WindowState.Normal) { Settings.W = Width; Settings.H = Height; } };
+            SizeChanged += delegate { UpdateShape(); if (WindowState == WindowState.Normal) { Settings.W = Width; Settings.H = Height; } };
             LocationChanged += delegate { if (WindowState == WindowState.Normal) { Settings.X = Left; Settings.Y = Top; } };
             SetupTray();
             Refresh2();
@@ -141,7 +142,7 @@ namespace AgentWatch
         void UpdateChrome()
         {
             var ch = new WindowChrome { CaptionHeight = 40, ResizeBorderThickness = new Thickness(7), CornerRadius = new CornerRadius(0), UseAeroCaptionButtons = false,
-                GlassFrameThickness = Theme.BackdropType != 0 ? new Thickness(-1) : new Thickness(0, 0, 0, 1) };
+                GlassFrameThickness = new Thickness(0) };
             WindowChrome.SetWindowChrome(this, ch);
         }
         void ApplyBackdrop()
@@ -149,17 +150,15 @@ namespace AgentWatch
             if (hwnd == IntPtr.Zero) return;
             N2.Dwm(hwnd, 20, 1);  // immersive dark mode
             N2.Dwm(hwnd, 33, 2);  // round corners
-            int bt = Theme.BackdropType;
-            N2.Dwm(hwnd, 38, bt == 0 ? 1 : bt); // DWMWA_SYSTEMBACKDROP_TYPE: 1 none, 2 Mica, 3 Acrylic
-            N2.Dwm(hwnd, 34, unchecked((int)0xFFFFFFFE)); // no coloured border
-            var src = HwndSource.FromHwnd(hwnd);
-            if (src != null && src.CompositionTarget != null) src.CompositionTarget.BackgroundColor = bt != 0 ? Colors.Transparent : Theme.Bg1;
+            N2.Dwm(hwnd, 38, 1);  // no system backdrop (Mica/Acrylic go solid whenever the window is not focused); blur comes from SetAccent
+            SetAccent(Theme.BackdropType != 0);
         }
         void OnSource(object s, EventArgs e)
         {
             hwnd = new WindowInteropHelper(this).Handle;
             ApplyBackdrop();
             HwndSource.FromHwnd(hwnd).AddHook(Hook);
+            UpdateShape();
             if (Settings.Maximized) WindowState = WindowState.Maximized;
         }
         bool OverMax(IntPtr lp)
@@ -176,7 +175,9 @@ namespace AgentWatch
         IntPtr Hook(IntPtr h, int msg, IntPtr wp, IntPtr lp, ref bool handled)
         {
             // Windows 11 snap layouts: report the maximize button as HTMAXBUTTON
-            if (msg == 0x0084) { if (OverMax(lp)) { handled = true; btnMax.Tag = "hot"; return new IntPtr(9); } if (btnMax.Tag != null) btnMax.Tag = null; }
+            if (msg == 0x0024) { MinMax(lp); }
+            else if (msg == 0x0005) { Dispatcher.BeginInvoke(new Action(UpdateShape), DispatcherPriority.Render); }
+            else if (msg == 0x0084) { if (OverMax(lp)) { handled = true; btnMax.Tag = "hot"; return new IntPtr(9); } if (btnMax.Tag != null) btnMax.Tag = null; }
             else if (msg == 0x00A1 && wp.ToInt64() == 9) { handled = true; return IntPtr.Zero; }
             else if (msg == 0x00A2 && wp.ToInt64() == 9) { handled = true; btnMax.Tag = null; ToggleMax(); return IntPtr.Zero; }
             else if (msg == 0x02A2) { if (btnMax.Tag != null) btnMax.Tag = null; }
@@ -206,7 +207,7 @@ namespace AgentWatch
             AmberText = Frz(Theme.IsLight ? "#B45309" : "#FCD34D"); RedText = Frz(Theme.IsLight ? "#BE123C" : "#FDA4AF");
             eyes.SetPalette(Theme.Accent, Theme.Accent2, Theme.IsLight);
             titleDot.Fill = new SolidColorBrush(Theme.Accent);
-            UpdateChrome(); ApplyBackdrop();
+            UpdateChrome(); ApplyBackdrop(); ApplyReadability(); if (tiles.Count > 0) RestyleTiles();
             histSig = -1; pool.Clear(); hpool.Clear(); rowItems.Clear(); histItems.Clear(); detKey = "~";
             if (IsLoaded) RefreshRows();
         }
@@ -216,35 +217,6 @@ namespace AgentWatch
             bool run = IsShown;
             if (run && !frame.IsEnabled) frame.Start();
             else if (!run && frame.IsEnabled) frame.Stop();
-        }
-
-        // rare, faint diagonal sheen - like sunlight catching a tilting surface. Off with reduced motion.
-        Rectangle glint; TranslateTransform glintT = new TranslateTransform(); double glintStart = -1, nextGlint = -1, glintLen = 2; Random grnd = new Random();
-        void Glint(double t)
-        {
-            if (glint == null)
-            {
-                var root = Content as Grid; if (root == null || layout == null) return;
-                var gb = new LinearGradientBrush { StartPoint = new Point(0, 0.5), EndPoint = new Point(1, 0.5) };
-                gb.GradientStops.Add(new GradientStop(Color.FromArgb(0, 255, 255, 255), 0));
-                gb.GradientStops.Add(new GradientStop(Color.FromArgb(18, 255, 255, 255), 0.5));
-                gb.GradientStops.Add(new GradientStop(Color.FromArgb(0, 255, 255, 255), 1)); gb.Freeze();
-                glint = new Rectangle { Width = 260, Fill = gb, IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left, Visibility = Visibility.Collapsed };
-                var tg = new TransformGroup(); tg.Children.Add(new SkewTransform(-28, 0)); tg.Children.Add(glintT); glint.RenderTransform = tg;
-                root.Children.Insert(root.Children.IndexOf(layout) + 1, glint);
-                nextGlint = t + 8 + grnd.NextDouble() * 20;
-            }
-            if (glintStart < 0)
-            {
-                if (t < nextGlint) return;
-                if (!Settings.AllowShake) { nextGlint = t + 30; return; }
-                glintStart = t; glintLen = 1.5 + grnd.NextDouble(); glint.Visibility = Visibility.Visible;
-            }
-            double u = (t - glintStart) / glintLen;
-            if (u >= 1 || !Settings.AllowShake) { glint.Visibility = Visibility.Collapsed; glintStart = -1; nextGlint = t + 20 + grnd.NextDouble() * 20; return; }
-            double w = ActualWidth, e = u * u * (3 - 2 * u);
-            glintT.X = -400 + e * (w + 800);
-            glint.Opacity = Math.Sin(Math.PI * u) * (Theme.IsLight ? 0.9 : 0.7);
         }
 
         void Frame()

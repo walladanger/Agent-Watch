@@ -28,40 +28,46 @@
       </StackPanel>
     </Grid>
 
-    <!-- header: eyes + live facts -->
+    <!-- header: eyes + status + live machine tiles + actions -->
     <ContentControl Grid.Row="1" Style="{StaticResource Card}" Padding="0" Margin="0,0,0,8">
       <Grid>
         <Border x:Name="HeaderGlow" CornerRadius="12" Opacity="0" IsHitTestVisible="False"/>
-        <Grid Margin="10,8,14,8">
+        <Grid Margin="12,10,10,10">
           <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="*"/>
             <ColumnDefinition Width="Auto"/>
           </Grid.ColumnDefinitions>
-          <Canvas x:Name="EyeHost" Width="176" Height="82" ClipToBounds="False" VerticalAlignment="Center"/>
-          <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="14,0,10,0">
-            <TextBlock x:Name="HeadMain" FontSize="19" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Text="Watching for AI agents..."/>
-            <TextBlock x:Name="HeadSub" FontSize="12.5" Foreground="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,3,0,0" MaxHeight="56" TextTrimming="CharacterEllipsis"/>
-            <WrapPanel x:Name="FactChips" Margin="0,6,0,0"/>
-          </StackPanel>
-          <StackPanel Grid.Column="2" VerticalAlignment="Center" HorizontalAlignment="Right">
-            <Border x:Name="StatePill" Style="{StaticResource Pill}" HorizontalAlignment="Right" Padding="12,4" CornerRadius="12">
+          <StackPanel VerticalAlignment="Center" Margin="0,0,6,0">
+            <Canvas x:Name="EyeHost" Width="176" Height="82" ClipToBounds="False" HorizontalAlignment="Center">
+              <Canvas.LayoutTransform><ScaleTransform x:Name="EyeScale" ScaleX="1.3" ScaleY="1.3"/></Canvas.LayoutTransform>
+            </Canvas>
+            <Border x:Name="StatePill" Style="{StaticResource Pill}" HorizontalAlignment="Center" Padding="14,4" CornerRadius="12" Margin="0,12,0,0">
               <TextBlock x:Name="StateText" FontWeight="Bold" FontSize="12" Text="IDLE"/>
             </Border>
-            <TextBlock x:Name="StateSince" HorizontalAlignment="Right" Foreground="{DynamicResource Dim}" FontSize="11.5" Margin="0,6,0,0"/>
+            <TextBlock x:Name="StateSince" HorizontalAlignment="Center" Foreground="{DynamicResource Dim}" FontSize="11.5" Margin="0,5,0,0"/>
           </StackPanel>
+          <Grid x:Name="HeadText" Grid.Column="1" Margin="14,0,12,0">
+            <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+            <StackPanel>
+              <TextBlock x:Name="HeadMain" FontSize="19" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Text="Watching for AI agents..."/>
+              <TextBlock x:Name="HeadSub" FontSize="12.5" Foreground="{DynamicResource Dim}" TextWrapping="Wrap" Margin="0,2,0,0" MaxHeight="36" TextTrimming="CharacterEllipsis"/>
+              <WrapPanel x:Name="FactChips" Margin="0,4,0,2" MaxHeight="30" ClipToBounds="True"/>
+            </StackPanel>
+            <UniformGrid x:Name="Tiles" Grid.Row="1" Columns="4" Margin="0,6,0,0" VerticalAlignment="Top"/>
+          </Grid>
+          <StackPanel x:Name="HeadActions" Grid.Column="2" VerticalAlignment="Center" Width="158"/>
         </Grid>
       </Grid>
     </ContentControl>
 
     <!-- toolbar -->
-    <WrapPanel Grid.Row="2" Margin="2,0,0,4">
+    <WrapPanel x:Name="Toolbar" Grid.Row="2" Margin="2,0,0,4">
       <CheckBox x:Name="ChkModels" Style="{StaticResource Switch}" Content="Show model servers" VerticalAlignment="Center"/>
       <CheckBox x:Name="ChkHelpers" Style="{StaticResource Switch}" Content="Show console helpers" VerticalAlignment="Center"/>
       <CheckBox x:Name="ChkMcp" Style="{StaticResource Switch}" Content="Show tool servers (MCP)" VerticalAlignment="Center"/>
       <Button x:Name="BtnExpand" Style="{StaticResource Btn}" Content="Expand all" Padding="10,4"/>
       <Button x:Name="BtnCollapse" Style="{StaticResource Btn}" Content="Collapse all" Padding="10,4"/>
-      <Button x:Name="BtnLogs" Style="{StaticResource Btn}" Content="Open logs" Padding="10,4"/>
       <Button x:Name="BtnRules" Style="{StaticResource Btn}" Content="Edit explanations" Padding="10,4"/>
     </WrapPanel>
 
@@ -159,9 +165,11 @@
     </ContentControl>
   </Grid>
 
+  <Canvas x:Name="GlintHost" IsHitTestVisible="False" ClipToBounds="True"/>
+
   <!-- overlays -->
   <Border x:Name="Scrim" Background="#661E1B4B" Visibility="Collapsed"/>
-  <Border x:Name="AppearPanel" Width="380" HorizontalAlignment="Right" Margin="0,44,10,10" Visibility="Collapsed">
+  <Border x:Name="AppearPanel" Width="380" HorizontalAlignment="Right" Margin="0,44,10,10" Visibility="Collapsed" Background="{DynamicResource FlyoutBrush}" CornerRadius="12">
     <Border.RenderTransform><TranslateTransform x:Name="AppearShift" X="400"/></Border.RenderTransform>
     <ContentControl Style="{StaticResource Card}" Padding="0">
       <Grid>
@@ -193,4 +201,5 @@
       </StackPanel>
     </StackPanel>
   </Border>
+  <Border x:Name="WinEdge" CornerRadius="8" BorderThickness="1" BorderBrush="{DynamicResource Line}" IsHitTestVisible="False"/>
 </Grid>

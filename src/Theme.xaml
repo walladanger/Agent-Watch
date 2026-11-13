@@ -18,6 +18,7 @@
   <SolidColorBrush x:Key="CardTex" Color="Transparent"/>
   <SolidColorBrush x:Key="CardSheen" Color="Transparent"/>
   <SolidColorBrush x:Key="BaseFill" Color="#1E1B4B"/>
+  <SolidColorBrush x:Key="FlyoutBrush" Color="#FA22203A"/>
   <SolidColorBrush x:Key="Soft" Color="#18FFFFFF"/>
   <SolidColorBrush x:Key="Soft2" Color="#2CFFFFFF"/>
 

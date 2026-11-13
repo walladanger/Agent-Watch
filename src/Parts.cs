@@ -123,7 +123,9 @@ namespace AgentWatch
         public static Preset Find(string name) { foreach (var p in Presets) if (p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return p; return Presets[0]; }
 
         // 0 = solid, 2 = Mica, 3 = Acrylic
-        public static int BackdropType { get { return Settings.Blur < 1 ? 0 : Settings.Blur < 50 ? 2 : 3; } }
+        // 0 = off, 4 = blur-behind (acrylic accent on a per-pixel-alpha window; stays on when the window is not focused)
+        public static int PanelAlpha = 250;
+        public static int BackdropType { get { return Settings.Blur < 1 ? 0 : 4; } }
 
         static ImageBrush MakeNoise(int w, int h, bool streaks)
         {
@@ -167,8 +169,12 @@ namespace AgentWatch
             string f = Settings.Finish;
             bool backdrop = BackdropType != 0;
             double t = Math.Max(0, Math.Min(100, Settings.Transparency));
-            int panelA = (int)(250 - t * 1.25); if (f == "Glass") panelA = (int)(panelA * 0.7); panelA = Math.Max(f == "Glass" ? 95 : 125, panelA);
-            int baseA = backdrop ? (int)Math.Max(70, 255 - t * 1.85) : 255;
+            // panel transparency: 0 = nearly solid cards, 100 = cards almost clear (text keeps a soft shadow for readability)
+            int panelA = (int)(250 - t * 2.2); if (f == "Glass") panelA = (int)(panelA * 0.7); panelA = Math.Max(f == "Glass" ? 22 : 30, panelA);
+            // blur slider: how much of the blurred desktop shows through the window background (0 = solid, 100 = mostly blur)
+            double bl = Math.Max(0, Math.Min(100, Settings.Blur));
+            int baseA = backdrop ? (int)Math.Max(40, 235 - bl * 1.95) : 255;
+            PanelAlpha = panelA;
 
             R["Accent"] = SB(Accent); R["Accent2"] = SB(Accent2); R["AccentSoft"] = SB(A(Accent, 0x38));
             R["Text"] = SB(Text); R["Dim"] = SB(A(Mix(Text, Accent, 0.38), 0xE0));
@@ -177,6 +183,7 @@ namespace AgentWatch
             R["Hover"] = SB(A(ov, IsLight ? 0x12 : 0x1C)); R["Sel"] = SB(A(Accent, IsLight ? 0x30 : 0x45));
             R["Soft"] = SB(A(ov, IsLight ? 0x10 : 0x18)); R["Soft2"] = SB(A(ov, IsLight ? 0x1E : 0x2C));
             R["BaseFill"] = SB(A(Bg1, baseA));
+            R["FlyoutBrush"] = SB(A(Mix(Panel, Bg1, 0.35), 0xFA)); // menus / flyouts: always opaque enough that nothing bleeds through
 
             Brush tex = Brushes.Transparent, sheen = Brushes.Transparent;
             switch (f)
