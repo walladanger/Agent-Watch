@@ -1,0 +1,21 @@
+# build output
+*.exe
+*.pdb
+*.obj
+# local state / machine-specific
+settings.json
+*.bak
+*.v1.cs.bak
+# logs, screenshots, episode history
+*.log
+*.tsv
+status.txt
+screenshot*.png
+logs/
+# secrets (never commit)
+.env
+*.env
+*.key
+*.pem
+*token*
+*secret*
