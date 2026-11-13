@@ -1,10 +1,76 @@
 {
-  "version": 2,
+  "version": 3,
   "about": "Agent Watch plain-English explanations. First matching rule wins, so put specific rules above general ones. Match fields (all optional, case-insensitive .NET regex): name = exe name, path = full exe path, cmd = command line, parent = parent exe name. risk: green = normal helper, yellow = can act for you / network / MCP tool server, screen = screen-control helper (Yellow while loaded and idle, Red when active). category: agent / mcp / screen-control / model-server / service (which ones show is set by showCategories; 'Show model servers' in the app adds model-server). short = name used in sentences like 'OpenBot (Gemini) opened Blender'. category 'app' = a normal desktop app (shown when an agent opens it). agent: true makes a matching process show as its own app in the summary. Agent Watch reloads this file automatically when it changes.",
   "showCategories": [
     "agent",
     "mcp",
     "screen-control"
+  ],
+  "danger": [
+    {
+      "id": "browser-logins",
+      "kind": "cmd",
+      "title": "Reading browser passwords or cookies",
+      "match": "(?i)(Login Data|Web Data|logins\\.json|key4\\.db|cookies\\.sqlite|\\\\Network\\\\Cookies|\\\\User Data\\\\Local State|\\\\(Chrome|Edge|Brave-Browser|Firefox)\\\\[^\\\"']*\\\\Cookies\\b)",
+      "why": "An agent command touches a browser's saved-password, cookie or encryption-key file. That is how session cookies and saved logins get stolen.",
+      "todo": "Unless you asked for this, kill it, then change important passwords and sign out other sessions."
+    },
+    {
+      "id": "credential-store",
+      "kind": "cmd",
+      "title": "Touching Windows credential stores or a password vault",
+      "match": "(?i)(cmdkey(\\.exe)?\\s+/list|vaultcmd|mimikatz|sekurlsa|procdump[^\\n]*lsass|comsvcs[^\\n]*MiniDump|Get-StoredCredential|\\\\Microsoft\\\\(Protect|Credentials|Vault)\\\\|\\.kdbx\\b|\\\\1Password\\\\|\\\\Bitwarden\\\\[^\\\"']*data\\.json)",
+      "why": "An agent command reads Windows Credential Manager, DPAPI keys, LSASS memory or a password-manager vault file.",
+      "todo": "Kill it unless you asked for exactly this."
+    },
+    {
+      "id": "mass-delete",
+      "kind": "cmd",
+      "title": "Deleting or renaming lots of your files",
+      "match": "(?i)((Remove-Item|\\brm\\b|\\bdel\\b|\\berase\\b|\\brd\\b|\\brmdir\\b)[^|;\\n]*(-Recurse|\\s/s\\b|\\s-[a-z]*r[a-z]*\\b)[^|;\\n]*(\\$env:USERPROFILE|\\$HOME|~[\\\\/]?(\\s|\\\"|'|$)|C:\\\\Users\\\\[^\\\\\\\"' ]+\\\\?(\\\\(Documents|Desktop|Pictures|Downloads|Videos|Music|OneDrive)\\\\?)?(\\s|\\\"|'|$|\\*)|[A-Z]:\\\\\\*?(\\s|\\\"|'|$)|/mnt/c/Users)|-Recurse[^\\n]*\\|\\s*(Rename-Item|Remove-Item)\\b|\\bformat(\\.com)?\\s+[A-Z]:)",
+      "why": "An agent command recursively deletes (or bulk-renames) a whole user folder, your profile or a drive root.",
+      "todo": "Kill it now if you did not ask for this; check the Recycle Bin and your backups."
+    },
+    {
+      "id": "security-off",
+      "kind": "cmd",
+      "title": "Turning off Defender or the firewall",
+      "match": "(?i)(Set-MpPreference[^\\n]*-Disable\\w+\\s+\\$?(true|1)|Add-MpPreference[^\\n]*-Exclusion|DisableAntiSpyware|DisableRealtimeMonitoring|netsh(\\.exe)?\\s+(adv)?firewall\\s+set[^\\n]*state\\s+off|Set-NetFirewallProfile[^\\n]*-Enabled\\s+\\$?(false|0)|sc(\\.exe)?\\s+(stop|config)\\s+(WinDefend|mpssvc))",
+      "why": "An agent command disables Microsoft Defender, adds an antivirus exclusion, or turns off the Windows firewall.",
+      "todo": "Kill it, then re-check Windows Security settings."
+    },
+    {
+      "id": "startup-persistence",
+      "kind": "cmd",
+      "title": "Adding something to run at startup",
+      "match": "(?i)(reg(\\.exe)?\\s+add\\s+[^\\n]*\\\\CurrentVersion\\\\Run(Once)?\\b|(New|Set)-ItemProperty[^\\n]*\\\\CurrentVersion\\\\Run(Once)?\\b|schtasks(\\.exe)?\\s+/create|Register-ScheduledTask)",
+      "why": "An agent command writes a Run key or creates a scheduled task, so something will start automatically every time you log on.",
+      "todo": "Check what it adds; remove it if you did not ask for it."
+    },
+    {
+      "id": "download-execute",
+      "kind": "cmd",
+      "title": "Downloading and running code from the internet",
+      "match": "(?i)((\\biwr\\b|\\birm\\b|Invoke-WebRequest|Invoke-RestMethod|\\bcurl\\b|\\bwget\\b|Net\\.WebClient)[^\\n|]*\\|\\s*(iex|Invoke-Expression|sh|bash|python3?|cmd)\\b|\\biex\\s*\\(\\s*(New-Object\\s+Net\\.WebClient|\\(?\\s*iwr|\\(?\\s*irm|\\(?\\s*Invoke-WebRequest)|DownloadString\\s*\\(|certutil[^\\n]*-urlcache|bitsadmin(\\.exe)?\\s+/transfer|mshta(\\.exe)?\\s+https?:)",
+      "why": "An agent command downloads a script and runs it straight away (for example 'irm ... | iex' or 'curl ... | sh'), with no chance to review it.",
+      "todo": "Kill it unless you trust the exact URL."
+    },
+    {
+      "id": "remote-access-tool",
+      "kind": "name",
+      "title": "Opening a remote-access tool",
+      "name": "(?i)^(anydesk|teamviewer|teamviewer_service|rustdesk|screenconnect\\..*|connectwisecontrol\\..*|aa_v3|ammyy.*|tvnserver|winvnc|vncserver|ultravnc.*|remotepc.*|splashtop.*|srserver|remoting_host|quickassist|parsecd|ngrok|frpc|chisel)\\.exe$",
+      "why": "An agent started a remote-desktop or tunnelling tool, which could let someone else see or control this PC.",
+      "todo": "Kill it unless you started a support session on purpose."
+    },
+    {
+      "id": "sensitive-window",
+      "kind": "window",
+      "title": "Driving a banking or password-manager window",
+      "match": "(?i)\\b(bank|banking|chase|wells fargo|bank of america|citibank|capital one|creditwise|paypal|venmo|zelle|schwab|fidelity|vanguard|robinhood|coinbase|1password|bitwarden|lastpass|keepass(xc)?|dashlane|nordpass|proton pass|credential manager|password manager)\\b",
+      "why": "A screen-control helper is active while a banking, payments or password-manager window is in front.",
+      "todo": "Take back the mouse, close the window, and stop the agent unless you asked it to do this."
+    }
   ],
   "rules": [
     {
